@@ -1,0 +1,10 @@
+python-dotenv
+deepagents
+langchain-openai
+langchain-community
+langchain-text-splitters
+chromadb
+rank-bm25
+numpy
+pypdf
+streamlit

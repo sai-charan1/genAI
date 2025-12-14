@@ -1,0 +1,11 @@
+C:\Users\saich\Downloads\AI_Assignment\.env
+C:\Users\saich\Downloads\AI_Assignment\venv
+venv
+pycache/
+venv/
+__pycache__/
+chromadb/
+uploaded_docs/
+uploads/
+.env
+.vscode/
