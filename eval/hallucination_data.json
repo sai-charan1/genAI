@@ -1,0 +1,17 @@
+[
+  {
+    "question": "How do I start the washing machine?",
+    "gold_answer": "connect power, water inlet, select cycle, press start",
+    "allowed_sources": ["tmpr82l6kmj.pdf"]
+  },
+  {
+    "question": "What safety checks before operating?",
+    "gold_answer": "check safety guards, leaks, power connection",
+    "allowed_sources": ["tmpr82l6kmj.pdf"]
+  },
+  {
+    "question": "Warranty period?",
+    "gold_answer": "1-year or 2-year warranty",
+    "allowed_sources": ["tmpr82l6kmj.pdf"]
+  }
+]

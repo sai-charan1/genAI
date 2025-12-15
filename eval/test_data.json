@@ -1,0 +1,10 @@
+[
+  {
+    "question": "washing machine start",
+    "gold_sources": ["tmpr82l6kmj.pdf"]
+  },
+  {
+    "question": "safety guards machine",
+    "gold_sources": ["tmpr82l6kmj.pdf"]
+  }
+]
