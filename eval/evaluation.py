@@ -1,90 +1,96 @@
 # eval/evaluation.py
-
+import json
 import time
 from typing import List, Dict, Any
-
 import numpy as np
 
-from agents.supervisor_agent import supervisor
 from ingestion.retrieval import HybridRetriever
+from agents.supervisor_agent import generate_answer_with_context  # your helper
 
 
-def cosine_sim(a, b):
-    a = np.array(a)
-    b = np.array(b)
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+def compute_hallucination_rate(
+    qa_spec: List[Dict[str, Any]], vectordb, docs, top_k: int = 5
+) -> Dict[str, Any]:
+    """Hallucination rate over 10 questions (assignment requirement)"""
+    retriever = HybridRetriever(vectordb, docs)
+    hallucinated = 0
+    total = 0
 
+    for item in qa_spec:
+        q = item["question"]
+        allowed_sources = set(item.get("allowed_sources", []))
+        required_terms = set(item.get("gold_answer", "").lower().split(","))
 
-def measure_latency(questions: List[str], vectordb, docs) -> Dict[str, Any]:
-    times = []
-    for q in questions:
-        t0 = time.time()
-        _ = supervisor.invoke(
-            {
-                "messages": [{"role": "user", "content": q}],
-                "extra": {"vectorstore": vectordb, "docs": docs},
-            }
-        )
-        times.append(time.time() - t0)
-    return {"avg_latency": float(sum(times) / len(times)), "all": times}
+        # Retrieve + generate answer
+        top_chunks, _ = retriever.retrieve(q, top_k=top_k)
+        answer_json = generate_answer_with_context(q, top_chunks)
+        
+        try:
+            parsed = json.loads(answer_json)
+            ans_text = (parsed.get("answer", "") or "").lower()
+            evidence = parsed.get("evidence_used", [])
+            cited_sources = {e.get("source", "") for e in evidence}
+            
+            # Hallucination if: bad sources OR missing required terms
+            bad_sources = bool(allowed_sources) and not cited_sources.issubset(allowed_sources)
+            missing_terms = len(required_terms - set(ans_text.split())) > 0
+            
+            if bad_sources or missing_terms:
+                hallucinated += 1
+        except:
+            hallucinated += 1  # JSON parse fail = hallucinated
+        
+        total += 1
+
+    return {
+        "hallucination_rate": float(hallucinated / total),
+        "total_questions": total,
+        "hallucinated": hallucinated
+    }
 
 
 def retrieval_precision_recall(
     qa_pairs: List[Dict[str, Any]], vectordb, docs, top_k: int = 5
 ) -> Dict[str, Any]:
-    """
-    qa_pairs: list of {"question": str, "gold_sources": [source_ids]}
-    Returns macro precision and recall based on whether the retriever returns chunks
-    whose 'source' is in gold_sources.
-    """
+    """Retrieval precision/recall from labeled QA pairs"""
     retriever = HybridRetriever(vectordb, docs)
-    precisions = []
-    recalls = []
+    precisions, recalls = [], []
 
     for item in qa_pairs:
         q = item["question"]
         gold_sources = set(item["gold_sources"])
+        
         top_chunks, _ = retriever.retrieve(q, top_k=top_k)
-        retrieved_sources = [c.get("source") for c in top_chunks if c.get("source")]
-
-        if not retrieved_sources or not gold_sources:
-            continue
-
-        retrieved_set = set(retrieved_sources)
-        tp = len(retrieved_set & gold_sources)
-        precision = tp / len(retrieved_set)
-        recall = tp / len(gold_sources)
-
+        retrieved_sources = {c.get("source", "") for c in top_chunks}
+        
+        tp = len(retrieved_sources & gold_sources)
+        precision = tp / len(retrieved_sources) if retrieved_sources else 0
+        recall = tp / len(gold_sources) if gold_sources else 0
+        
         precisions.append(precision)
         recalls.append(recall)
 
     return {
-        "precision": float(sum(precisions) / len(precisions)) if precisions else 0.0,
-        "recall": float(sum(recalls) / len(recalls)) if recalls else 0.0,
+        "precision": float(np.mean(precisions)),
+        "recall": float(np.mean(recalls)),
+        "avg_precision": float(np.mean(precisions)),
+        "avg_recall": float(np.mean(recalls))
     }
 
 
-def embedding_diagnostics(positive_pairs, negative_pairs, embed_fn) -> Dict[str, Any]:
-    """
-    positive_pairs / negative_pairs: list of (text1, text2)
-    embed_fn: function that maps text -> embedding vector (from your HF model)
-    """
-    pos_scores = []
-    neg_scores = []
-
-    for a, b in positive_pairs:
-        ea = embed_fn(a)
-        eb = embed_fn(b)
-        pos_scores.append(cosine_sim(ea, eb))
-
-    for a, b in negative_pairs:
-        ea = embed_fn(a)
-        eb = embed_fn(b)
-        neg_scores.append(cosine_sim(ea, eb))
-
+def measure_latency(questions: List[str], vectordb, docs) -> Dict[str, Any]:
+    """Average latency over questions"""
+    retriever = HybridRetriever(vectordb, docs)
+    times = []
+    
+    for q in questions:
+        t0 = time.time()
+        top_chunks, _ = retriever.retrieve(q, top_k=5)
+        generate_answer_with_context(q, top_chunks)
+        times.append(time.time() - t0)
+    
     return {
-        "positive_mean": float(np.mean(pos_scores)) if pos_scores else 0.0,
-        "negative_mean": float(np.mean(neg_scores)) if neg_scores else 0.0,
-        "positive_samples": pos_scores,
-        "negative_samples": neg_scores,
+        "avg_latency": float(np.mean(times)),
+        "p95_latency": float(np.percentile(times, 95)),
+        "times": times
     }
