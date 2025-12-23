@@ -1,42 +1,38 @@
-# app/ui_streamlit.py
-
 import os
 import sys
 import time
 import json
-
 import streamlit as st
 
-CURRENT_DIR = os.path.dirname(__file__)
-PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
-if PROJECT_ROOT not in sys.path:
-    sys.path.append(PROJECT_ROOT)
+# Add project root to path
+CURRENTDIR = os.path.dirname(__file__)
+PROJECTROOT = os.path.abspath(os.path.join(CURRENTDIR, '..'))
+if PROJECTROOT not in sys.path:
+    sys.path.append(PROJECTROOT)
 
+# ✅ SAFE IMPORTS
 from ingestion.ingestion import (
     load_uploaded_pdfs,
     semantic_chunk_docs,
     enrich_chunks_with_metadata,
-    build_vectorstore,
+    build_vectorstore
 )
 from ingestion.retrieval import HybridRetriever
-from agents.supervisor_agent import model, ANSWER_AGENT_PROMPT  # reuse same model/prompt
 
+st.set_page_config(page_title="GenAI Assignment - Internal Analyst", layout="wide")
+st.title("🔍 GenAI Assignment - Internal AI Analyst (Supervisor Agent Only)")
 
-st.set_page_config(page_title="GenAI Assignment – Internal Analyst", layout="wide")
-st.title("GenAI Assignment – Internal AI Analyst (DeepAgents + RAG)")
-
-# ---------- Sidebar: upload PDFs & build index ----------
-
+# ========== Sidebar: Upload PDFs & Build Index ==========
 st.sidebar.header("1. Upload PDFs")
 uploaded_files = st.sidebar.file_uploader(
-    "Upload policy / manuals / financial PDFs",
-    type=["pdf"],
-    accept_multiple_files=True,
+    "Upload policy manuals / financial PDFs",
+    type=['pdf'],
+    accept_multiple_files=True
 )
 
-if "vectordb" not in st.session_state:
+if 'vectordb' not in st.session_state:
     st.session_state.vectordb = None
-if "docs" not in st.session_state:
+if 'docs' not in st.session_state:
     st.session_state.docs = None
 
 if st.sidebar.button("Build Index"):
@@ -50,96 +46,84 @@ if st.sidebar.button("Build Index"):
                 st.sidebar.error("No text chunks could be created from the uploaded PDFs.")
             else:
                 enriched = enrich_chunks_with_metadata(chunks)
-                vectordb = build_vectorstore(enriched, persist_dir=None)
+                vectordb = build_vectorstore(enriched)
                 st.session_state.vectordb = vectordb
                 st.session_state.docs = enriched
-                st.sidebar.success(
-                    f"Indexed {len(enriched)} chunks from {len(uploaded_files)} files."
-                )
+                st.sidebar.success(f"✅ Indexed {len(enriched)} chunks from {len(uploaded_files)} files.")
 
-# ---------- Main: ask a question and show answer ----------
-
+# ========== Main UI - SUPERVISOR ONLY ==========
 st.header("2. Ask a Question")
-question = st.text_input("Your question about the uploaded documents")
+question = st.text_input("Your question about the uploaded documents:")
 
-def generate_answer_with_context(question: str, top_chunks):
-    """Direct, simple answer model call using the same JSON prompt."""
-    payload = {
-        "question": question,
-        "context": [
-            {
-                "source": c.get("source"),
-                "text": c.get("text", ""),
-                "score": c.get("score", 0.0),
-            }
-            for c in top_chunks
-        ],
-    }
-    messages = [
-        {"role": "system", "content": ANSWER_AGENT_PROMPT},
-        {"role": "user", "content": json.dumps(payload)},
-    ]
-    resp = model.invoke(messages)
-    return resp.content
-
-if st.button("Run Analysis"):
+if st.button("🚀 Run Supervisor Agent", type="primary"):
     if not st.session_state.vectordb or st.session_state.docs is None:
-        st.error("Please upload PDFs and click 'Build Index' first. Index is empty.")
+        st.error("❌ Please upload PDFs and click 'Build Index' first.")
     elif len(st.session_state.docs) == 0:
-        st.error("Index has 0 chunks. Check your PDFs and try again.")
+        st.error("❌ Index has 0 chunks. Check your PDFs.")
     elif not question:
-        st.error("Please enter a question.")
+        st.error("❌ Please enter a question.")
     else:
         vectordb = st.session_state.vectordb
         docs = st.session_state.docs
-
         t0 = time.time()
-        retriever = HybridRetriever(vectordb, docs)
-        top_chunks, diag = retriever.retrieve(question, top_k=5, strategy="hybrid")
+        final_json_str = ""
+
+        with st.spinner("🔍 Supervisor Agent analyzing..."):
+            try:
+                # ALWAYS invoke supervisor agent - NO FALLBACKS
+                from agents.supervisor_agent import run_supervisor_pipeline
+                final_json_str = run_supervisor_pipeline(question, vectordb, docs)
+            except Exception as e:
+                # Azure filter error - show exactly what happened
+                final_json_str = json.dumps({
+                    "error": "Azure filter blocked response",
+                    "details": str(e)[:200],
+                    "question": question
+                })
+
         latency = time.time() - t0
 
-        final_json_str = generate_answer_with_context(question, top_chunks)
-
-        st.subheader("Answer (raw JSON)")
+        # ========== Results Display ==========
+        st.subheader("📊 Raw Supervisor Output")
         st.code(final_json_str, language="json")
 
-        parsed = None
         try:
             parsed = json.loads(final_json_str)
-        except Exception:
-            parsed = None
+        except:
+            parsed = {"answer": final_json_str, "context": []}
 
-        if isinstance(parsed, dict):
-            st.subheader("Answer (parsed)")
-            st.write(parsed.get("answer", ""))
+        # Clean layout
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.subheader("💡 Answer")
+            answer = parsed.get('answer', parsed.get('response', 'No answer generated.'))
+            st.markdown(answer)
+        with col2:
+            st.subheader("📊 Metrics")
+            st.metric("Confidence", parsed.get('confidencescore', 0.0))
+            st.metric("Latency", f"{latency:.2f}s")
 
-            st.subheader("Evidence Used")
-            ev = parsed.get("evidence_used", [])
-            st.json(ev if isinstance(ev, list) else [])
+        # Evidence & Chunks
+        st.subheader("📄 Top Evidence")
+        chunks = parsed.get('topchunks', parsed.get('context', []))
+        if chunks:
+            for i, chunk in enumerate(chunks[:5]):
+                with st.expander(f"Chunk {i+1} (Score: {chunk.get('score', 0):.3f})"):
+                    st.write(f"**Source:** `{chunk.get('source', 'N/A')}`")
+                    st.text_area("Content", chunk.get('text', ''), height=120)
 
-            st.subheader("Top 5 Chunks (with text)")
-            top_chunks_json = parsed.get("top_chunks", [])
-            if not isinstance(top_chunks_json, list):
-                top_chunks_json = []
-            for i, c in enumerate(top_chunks_json[:5]):
-                st.markdown(f"**Chunk {i+1}**")
-                st.write(f"Source (doc id): {c.get('source')}")
-                st.write(f"Score: {c.get('score')}")
-                st.text_area(
-                    label="Text",
-                    value=c.get("text", ""),
-                    height=150,
-                    key=f"chunk_{i}",
-                )
+        st.subheader("❓ Analysis")
+        st.write(parsed.get('missinginformation', 'None identified.'))
 
-            st.subheader("Missing Information")
-            st.write(parsed.get("missing_information", ""))
+        with st.expander("🔧 Debug"):
+            st.metric("Total chunks in index", len(docs))
+            st.json({"diagnostics": parsed.get('diagnostics', {})})
 
-            st.subheader("Confidence Score")
-            st.write(parsed.get("confidence_score", 0.0))
-
-        with st.expander("Evaluation & Retrieval Diagnostics"):
-            st.markdown("**Latency (seconds)**")
-            st.metric("Last query latency", f"{latency:.2f}")
-            st.markdown("**Raw Retrieval Diagnostics:**")
-            st.json(diag)
+st.sidebar.markdown("---")
+st.sidebar.info("""
+**Supervisor Agent Only Mode**
+- Always uses multi-agent pipeline
+- Direct Azure OpenAI calls
+- No fallback pipelines
+- Shows raw Azure filter errors if blocked
+""")
