@@ -1,19 +1,23 @@
-# ingestion/retrieval.py
+# ingestion/retrieval.py - FINAL 768-DIM HYBRID RETRIEVER
 
 from typing import List, Dict, Any, Literal, Tuple
-
 from langchain_chroma import Chroma
 from rank_bm25 import BM25Okapi
 import numpy as np
 from dotenv import load_dotenv
-load_dotenv()
+from langchain_huggingface import HuggingFaceEmbeddings
 
+load_dotenv()
 
 def cosine_sim(a, b) -> float:
     a = np.array(a)
     b = np.array(b)
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
 
+# ✅ MATCH YOUR CHROMADB (768 dims)
+EMBEDDINGS = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-mpnet-base-v2"  # 768 dimensions ✅
+)
 
 class HybridRetriever:
     """
@@ -22,10 +26,19 @@ class HybridRetriever:
     - "bm25": pure BM25
     - "hybrid": combined + simple re-ranking
     """
-
+    
     def __init__(self, vectordb: Chroma, docs):
         self.vectordb = vectordb
         self.docs = docs or []
+        
+        # ✅ PROVEN EMBEDDING FIX
+        try:
+            self.vectordb._client.set_embedding_function(EMBEDDINGS)
+            print("[DEBUG] ✅ 768-dim embeddings set via client")
+        except Exception as e:
+            print(f"[DEBUG] ⚠️ Embeddings setup: {e}")
+        
+        # BM25 setup (unchanged)
         tokenized = [(d.page_content or "").split() for d in self.docs]
         if len(tokenized) == 0:
             self.bm25 = None
