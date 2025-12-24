@@ -8,7 +8,7 @@ load_dotenv()
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from sentence_transformers import SentenceTransformer
 from tempfile import NamedTemporaryFile
 
@@ -112,15 +112,24 @@ def enrich_chunks_with_metadata(chunks):
     return enriched
 
 
-def build_vectorstore(chunks, persist_dir: str = None):
-    """Build a Chroma vectorstore from chunks using HF embeddings."""
-    embeddings = HFEmbeddings()
-    vectordb = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
-        persist_directory=persist_dir,
-    )
-    return vectordb
+def buildvectorstore(chunks, persistdir: str = "data/chroma_db"):
+    """Build Chroma with persistence and error handling."""
+    print(f"📊 Building vectorstore with {len(chunks)} chunks...")
+    
+    try:
+        # Skip LLM enrichment if failing
+        embeddings = HFEmbeddings()
+        vectordb = Chroma.from_documents(
+            documents=chunks,  # Use raw chunks, skip enrichment
+            embedding=embeddings,
+            persist_directory=persistdir  # ✅ PERSIST!
+        )
+        print(f"✅ Stored {len(chunks)} docs in {persistdir}")
+        return vectordb
+    except Exception as e:
+        print(f"❌ Vectorstore failed: {e}")
+        # Fallback: empty store
+        return Chroma(embedding_function=HFEmbeddings(), persist_directory=persistdir)
 
 
 import json  # keep at bottom to avoid circular for classify_chunk

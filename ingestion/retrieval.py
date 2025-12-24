@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Any, Literal, Tuple
 
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from rank_bm25 import BM25Okapi
 import numpy as np
 from dotenv import load_dotenv

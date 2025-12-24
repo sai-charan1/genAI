@@ -1,42 +1,35 @@
-# agents/supervisor_agent.py
+# agents/supervisor_agent.py - FINAL FIXED VERSION
 
 import os
 import json
 from typing import Dict, Any, List
-
 from dotenv import load_dotenv
-load_dotenv()
 
+load_dotenv()
+from langchain.chat_models import init_chat_model
 from deepagents import create_deep_agent
-from langchain_openai import AzureChatOpenAI
+from langchain.agents.middleware import AgentMiddleware
 from langchain_core.tools import tool
 
+from langchain_chroma import Chroma  # ✅ FIXED
 from ingestion.retrieval import HybridRetriever
 from prompts.answer_generation_prompt import ANSWER_GENERATION_PROMPT
 
-
-# ---------- Shared LLM for all agents ----------
-
-model = AzureChatOpenAI(
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    azure_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
-    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    temperature=0,
-    max_retries=5,
+# ---------- Shared LLM ----------
+model = init_chat_model(
+    "azure_openai:gpt-4o-mini",
+    api_key=os.getenv('AZURE_OPENAI_API_KEY'),
+    api_version=os.getenv('AZURE_OPENAI_API_VERSION'),
+    azure_endpoint=os.getenv('AZURE_OPENAI_ENDPOINT')
 )
 
-
-# ---------- Sub‑agent prompts ----------
-
+# ---------- Sub-agent Prompts ----------
 QUERY_ANALYZER_PROMPT = """
 You are a Query Analyzer Agent for a document-grounded AI system.
 
-Input:
-- question: the user question as a string.
+Input: question (string)
 
-You must decide and RETURN STRICT JSON ONLY:
-
+RETURN STRICT JSON ONLY:
 {
   "intent": "factual | reasoning | comparison | multi-hop | missing_data",
   "retrieval_strategy": "vector | bm25 | hybrid",
@@ -45,149 +38,139 @@ You must decide and RETURN STRICT JSON ONLY:
 }
 
 Guidelines:
-- Use "multi-hop" if the answer needs multiple pieces of evidence.
-- Use "missing_data" if the question clearly asks for info unlikely to be
-  in the documents.
-- Prefer "hybrid" for long or ambiguous questions, "vector" for semantic,
-  "bm25" for very keyword / ID heavy queries.
+- "multi-hop": needs multiple evidence pieces
+- "missing_data": info unlikely in documents
+- "hybrid": long/ambiguous questions
+- "vector": semantic questions
+- "bm25": keyword/ID heavy queries
 
-Do NOT output anything except that JSON object.
+No prose. JSON only.
 """.strip()
 
 RETRIEVAL_AGENT_PROMPT = """
 You are the Retrieval Agent.
 
-Input:
-- plan: JSON with {intent, retrieval_strategy, top_k, query}
-- You also have access to a tool: retrieval_tool_dynamic(plan, vectorstore, docs)
+You get: plan (JSON with intent, retrieval_strategy, top_k, query)
 
 You MUST:
-1) Call retrieval_tool_dynamic(plan, vectorstore, docs).
-2) Take its output and RETURN STRICT JSON ONLY:
+1. Call retrieval_tool(plan)
+2. PARSE the JSON STRING response as dict
+3. RETURN STRICT JSON ONLY:
 
 {
   "top_chunks": [...],          // list of {source, text, score}
-  "contradictions": "",         // describe contradictions if any, else ""
-  "diagnostics": {}             // pass-through diagnostics from the tool
+  "contradictions": "",         // contradictions or ""
+  "diagnostics": {}             // from tool
 }
 
-Do NOT output anything except that JSON object.
+JSON only. No explanations.
 """.strip()
 
-# ANSWER_GENERATION_PROMPT already enforces correct schema and types
 ANSWER_AGENT_PROMPT = ANSWER_GENERATION_PROMPT
 
+# ---------- FIXED Middleware ----------
+class RetrievalMiddleware(AgentMiddleware):
+    def __init__(self, vectorstore, docs):
+        self.vectorstore = vectorstore
+        self.docs = docs
+        
+    @property
+    def tools(self):
+        @tool
+        def retrieval_tool(plan: Dict[str, Any]) -> str:  # ✅ str return type
+            """
+            Execute retrieval according to plan:
+            - retrieval_strategy: "vector", "bm25", or "hybrid"
+            - top_k: int
+            - query: str
+            Returns JSON string: {"top_chunks": [...], "diagnostics": {}}
+            """
+            strategy = plan.get("retrieval_strategy", "hybrid")
+            top_k = int(plan.get("top_k", 5))
+            query = plan.get("query", "")
 
-# ---------- Retrieval tool used by retrieval-agent ----------
+            retriever = HybridRetriever(self.vectorstore, self.docs)
+            top_chunks, diagnostics = retriever.retrieve(
+                query, top_k=top_k, strategy=strategy
+            )
 
-@tool
-def retrieval_tool_dynamic(plan: Dict[str, Any], vectorstore, docs) -> Dict[str, Any]:
-    """
-    Execute retrieval according to the plan:
-    - plan["retrieval_strategy"]: "vector", "bm25", or "hybrid"
-    - plan["top_k"]: int
-    - plan["query"]: str
-    Returns: {top_chunks, diagnostics}
-    """
-    strategy = plan.get("retrieval_strategy", "hybrid")
-    top_k = int(plan.get("top_k", 5))
-    query = plan.get("query", "")
+            print(f"[DEBUG] Retrieved chunks: {len(top_chunks)}")
+            print(f"[DEBUG] Diagnostics: {diagnostics}")
 
-    retriever = HybridRetriever(vectorstore, docs)
-    top_chunks, diagnostics = retriever.retrieve(query, top_k=top_k, strategy=strategy)
+            simple_chunks = [
+                {
+                    "source": c.get("source"),
+                    "text": c.get("text", ""),
+                    "score": float(c.get("score", 0.0)),
+                }
+                for c in top_chunks
+            ]
+            
+            # ✅ CRITICAL FIX: RETURN JSON STRING
+            result = {
+                "top_chunks": simple_chunks, 
+                "diagnostics": diagnostics
+            }
+            return json.dumps(result)
 
-    # Debug: see how many chunks we actually retrieved
-    print("[DEBUG] Retrieved chunks:", len(top_chunks))
-    print("[DEBUG] Diagnostics:", diagnostics)
+        return [retrieval_tool]
 
-    simple_chunks = [
+# ---------- Supervisor Factory ----------
+def get_or_create_supervisor(vectorstore, docs):
+    """Creates supervisor with fixed middleware."""
+    retrieval_middleware = RetrievalMiddleware(vectorstore, docs)
+
+    subagents = [
         {
-            "source": c.get("source"),
-            "text": c.get("text", ""),
-            "score": c.get("score", 0.0),
-        }
-        for c in top_chunks
+            "name": "query-analyzer",
+            "description": "Creates retrieval plan JSON from question.",
+            "system_prompt": QUERY_ANALYZER_PROMPT,
+            "tools": [],
+        },
+        {
+            "name": "retrieval-agent",
+            "description": "Executes retrieval and returns chunks JSON.",
+            "system_prompt": RETRIEVAL_AGENT_PROMPT,
+            "tools": [],  # From middleware
+            "middleware": [retrieval_middleware]
+        },
+        {
+            "name": "answer-agent",
+            "description": "Generates final JSON answer with citations.",
+            "system_prompt": ANSWER_AGENT_PROMPT,
+            "tools": [],
+        },
     ]
-    return {"top_chunks": simple_chunks, "diagnostics": diagnostics}
 
+    supervisor = create_deep_agent(
+        model=model,
+        system_prompt=(
+    "You orchestrate 3 sub-agents:\n\n"
+    "1. task('query-analyzer', question) → plan JSON\n"
+    "2. task('retrieval-agent', plan) → retrieval JSON with top_chunks\n"
+    "3. task('answer-agent', question=question, context=retrieval.top_chunks) → final JSON\n\n"
+    
+    "**CRITICAL:** Pass the FULL retrieval JSON response as `context` to answer-agent.\n"
+    "**Final output MUST be JSON ONLY with keys:**\n"
+    "answer, evidence_used, top_chunks, missing_information, confidence_score, diagnostics"),
 
-# ---------- Subagents config for DeepAgents ----------
+        subagents=subagents,
+    )
+    return supervisor
 
-subagents = [
-    {
-        "name": "query-analyzer",
-        "description": "Understands the user question and returns a retrieval plan JSON.",
-        "system_prompt": QUERY_ANALYZER_PROMPT,
-        "tools": [],
-    },
-    {
-        "name": "retrieval-agent",
-        "description": "Executes retrieval plan via retrieval_tool_dynamic and surfaces contradictions.",
-        "system_prompt": RETRIEVAL_AGENT_PROMPT,
-        "tools": [retrieval_tool_dynamic],
-    },
-    {
-        "name": "answer-agent",
-        "description": "Uses question + top_chunks to produce final JSON answer with citations.",
-        "system_prompt": ANSWER_AGENT_PROMPT,
-        "tools": [],
-    },
-]
-
-
-# ---------- Supervisor DeepAgent ----------
-
-supervisor = create_deep_agent(
-    model=model,
-    system_prompt=(
-        "You are an internal AI analyst.\n"
-        "You orchestrate three sub-agents using tasks.\n\n"
-        "Workflow:\n"
-        "1) Call task(name='query-analyzer') with {question} to get a JSON plan.\n"
-        "2) Call task(name='retrieval-agent') with {plan, vectorstore, docs}; it must\n"
-        "   use retrieval_tool_dynamic to fetch top_chunks + diagnostics.\n"
-        "3) Call task(name='answer-agent') with {question, context=top_chunks}.\n\n"
-        "The answer-agent MUST output STRICT JSON ONLY with keys:\n"
-        "  answer, evidence_used, top_chunks, missing_information, confidence_score, diagnostics\n\n"
-        "Return ONLY that final JSON object as the user-visible output. No prose."
-    ),
-    subagents=subagents,
-)
-
-
-# ---------- Helper for Streamlit ----------
-
-def run_supervisor_pipeline(
-    question: str,
-    vectorstore,
-    docs: List[Dict[str, Any]],
-) -> str:
-    """
-    Invoke the DeepAgent supervisor and return final output as a string.
-    This string should be a JSON object, but the UI will treat it as raw text
-    if parsing fails.
-    """
-    state = {
-        "messages": [{"role": "user", "content": question}],
-        "vectorstore": vectorstore,
-        "docs": docs,
-    }
-
+# ---------- Streamlit Helper ----------
+def run_supervisor_pipeline(question: str, vectorstore, docs: List[Dict[str, Any]]) -> str:
+    """Invoke supervisor and return JSON string."""
+    supervisor = get_or_create_supervisor(vectorstore, docs)
+    state = {"messages": [{"role": "user", "content": question}]}
     result = supervisor.invoke(state)
 
-    # Case 1: AIMessage-like
+    # Extract content
     if hasattr(result, "content"):
         return result.content
-
-    # Case 2: dict with messages
-    if isinstance(result, dict):
-        msgs = result.get("messages")
+    if isinstance(result, dict) and "messages" in result:
+        msgs = result["messages"]
         if isinstance(msgs, list) and msgs:
             last = msgs[-1]
-            if hasattr(last, "content"):
-                return last.content
-            if isinstance(last, dict) and "content" in last:
-                return last["content"]
-
-    # Fallback: string representation
+            return last.content if hasattr(last, "content") else last.get("content", str(result))
     return str(result)
