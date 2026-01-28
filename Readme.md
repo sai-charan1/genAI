@@ -1,4 +1,4 @@
-# GenAI Assignment – Internal AI Analyst (DeepAgents + RAG) 🚀
+# Internal AI Analyst (DeepAgents + RAG) 🚀
 
 An **end-to-end Retrieval-Augmented Generation (RAG) system** built using a **DeepAgents multi-agent workflow** to analyze **policy documents, product manuals, and financial reports** at enterprise scale.
 
