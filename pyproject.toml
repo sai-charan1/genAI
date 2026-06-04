@@ -1,0 +1,16 @@
+[project]
+name = "enterprise-rag-analyst"
+version = "1.0.0"
+description = "Enterprise RAG system with DeepAgents multi-agent workflow and hybrid retrieval"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6", "black>=24.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100

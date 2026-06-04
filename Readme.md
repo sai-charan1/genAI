@@ -58,14 +58,14 @@ genai-analyst/
 ### 1️⃣ Clone & Setup Environment
 
 ```bash
-git clone <your-repo>
-cd genai-analyst
+git clone https://github.com/sai-charan1/enterprise-rag-analyst.git
+cd enterprise-rag-analyst
 python -m venv .venv
 ```
 
 **Windows**
 ```bash
-.venv\Scriptsctivate
+.venv\Scripts\activate
 ```
 
 **Linux / macOS**

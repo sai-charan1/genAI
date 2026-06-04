@@ -1,18 +1,18 @@
 # ingestion/retrieval.py - FINAL 768-DIM HYBRID RETRIEVER
 
 from typing import List, Dict, Any, Literal, Tuple
-from langchain_chroma import Chroma
-from rank_bm25 import BM25Okapi
+
 import numpy as np
 from dotenv import load_dotenv
+from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
+from rank_bm25 import BM25Okapi
+
+from ingestion.utils import cosine_sim
 
 load_dotenv()
 
-def cosine_sim(a, b) -> float:
-    a = np.array(a)
-    b = np.array(b)
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+__all__ = ["cosine_sim", "HybridRetriever", "EMBEDDINGS"]
 
 # ✅ MATCH YOUR CHROMADB (768 dims)
 EMBEDDINGS = HuggingFaceEmbeddings(
