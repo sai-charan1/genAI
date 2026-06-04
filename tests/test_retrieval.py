@@ -1,6 +1,5 @@
 """Unit tests for retrieval utilities (no vector DB required)."""
 
-import numpy as np
 import pytest
 
 from ingestion.utils import cosine_sim

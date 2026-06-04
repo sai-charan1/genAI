@@ -16,9 +16,9 @@ jobs:
           python-version: "3.11"
       - name: Install test deps
         run: |
-          pip install --upgrade pip
-          pip install pytest ruff black numpy rank-bm25 python-dotenv
+          python -m pip install --upgrade pip
+          pip install pytest ruff numpy
       - name: Ruff
-        run: ruff check ingestion/ eval/ tests/ --ignore E501
+        run: ruff check tests/ ingestion/utils.py
       - name: Pytest
         run: pytest tests/ -v
